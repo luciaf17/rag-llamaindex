@@ -1,0 +1,8 @@
+llama-index>=0.14
+llama-index-llms-ollama
+llama-index-embeddings-ollama
+python-dotenv
+llama-index-llms-google-genai
+llama-index-embeddings-google-genai
+pypdf
+llama-index-readers-file

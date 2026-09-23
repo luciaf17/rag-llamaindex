@@ -1,0 +1,26 @@
+[
+  {
+    "question": "¿Cuántas cabezas de atención (heads) usa el modelo base del Transformer en Attention Is All You Need?",
+    "expected": ["8"]
+  },
+  {
+    "question": "¿Cuáles son las dos variantes de RAG que proponen Lewis et al. y en qué se diferencian?",
+    "expected": ["Sequence", "Token"]
+  },
+  {
+    "question": "¿En qué dos benchmarks de razonamiento intensivo en conocimiento (question answering y verificación de hechos) se evalúa ReAct?",
+    "expected": ["HotpotQA", "FEVER"]
+  },
+  {
+    "question": "Según Lost in the Middle, ¿qué forma tiene la curva de rendimiento de los modelos cuando la información relevante cambia de posición dentro del contexto?",
+    "expected": ["U"]
+  },
+  {
+    "question": "¿Cuál es la capital de Australia?",
+    "out_of_scope": true
+  },
+  {
+    "question": "¿Qué equipo ganó la Copa del Mundo de fútbol de 2022?",
+    "out_of_scope": true
+  }
+]
