@@ -4,17 +4,18 @@ Uso:
     python rag.py ingest              # indexa los archivos de data/
     python rag.py ask "tu pregunta"   # una pregunta puntual
     python rag.py chat                # modo interactivo
+
+Los chunks y sus embeddings se guardan en PostgreSQL con pgvector (DATABASE_URL).
 """
 import os
 import sys
+from collections import defaultdict
 
-from llama_index.core import (
-    PromptTemplate,
-    SimpleDirectoryReader,
-    StorageContext,
-    VectorStoreIndex,
-    load_index_from_storage,
-)
+import sqlalchemy
+from sqlalchemy.ext.asyncio import create_async_engine
+from llama_index.core import PromptTemplate, Settings, SimpleDirectoryReader, VectorStoreIndex
+from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
+from llama_index.vector_stores.postgres import PGVectorStore
 
 import config
 
@@ -34,25 +35,125 @@ QA_PROMPT = PromptTemplate(
 )
 
 
+# --- Conexión a PostgreSQL ---
+
+_engine: sqlalchemy.engine.Engine | None = None
+
+
+def _db_url() -> sqlalchemy.engine.URL:
+    url = config.DATABASE_URL
+    if url.startswith("postgres://"):  # formato viejo que SQLAlchemy 2 no acepta
+        url = "postgresql://" + url[len("postgres://"):]
+    return sqlalchemy.make_url(url)
+
+
+def get_engine() -> sqlalchemy.engine.Engine:
+    """Un único pool de conexiones por proceso, compartido con el vector store."""
+    global _engine
+    if _engine is None:
+        # pool_pre_ping descarta conexiones que el servidor cerró por inactividad.
+        _engine = sqlalchemy.create_engine(_db_url(), pool_pre_ping=True)
+    return _engine
+
+
+def _table() -> str:
+    # Mismo nombre que arma PGVectorStore: prefijo data_ y en minúsculas.
+    return f"data_{config.PG_TABLE}".lower()
+
+
+def _table_dim() -> int | None:
+    """Dimensión de la columna embedding si la tabla ya existe, o None."""
+    with get_engine().connect() as conn:
+        return conn.execute(
+            sqlalchemy.text(
+                "SELECT atttypmod FROM pg_attribute "
+                "WHERE attrelid = to_regclass(:t) AND attname = 'embedding'"
+            ),
+            {"t": _table()},
+        ).scalar()
+
+
+def build_vector_store() -> PGVectorStore:
+    dim = config.EMBED_DIM or len(Settings.embed_model.get_text_embedding("dimensión"))
+    existing = _table_dim()
+    if existing and existing != dim:
+        raise RuntimeError(
+            f"La tabla '{_table()}' tiene embeddings de {existing} dimensiones y el modelo "
+            f"actual produce {dim}. Usá otro PG_TABLE o borrá la tabla y reindexá."
+        )
+    # La librería exige también un engine asíncrono. Solo usamos los métodos
+    # sincrónicos, y crear el engine no abre conexiones, así que no se usa.
+    async_engine = create_async_engine(
+        _db_url().set(drivername="postgresql+asyncpg", query={})
+    )
+    return PGVectorStore(
+        engine=get_engine(),
+        async_engine=async_engine,
+        table_name=config.PG_TABLE,
+        embed_dim=dim,
+        use_jsonb=True,
+        indexed_metadata_keys={("file_name", "text")},
+        initialization_fail_on_error=True,
+    )
+
+
+# --- Indexación ---
+
+
+def _index_documents(index: VectorStoreIndex, documents: list, show_progress: bool = False) -> int:
+    """Indexa documentos reemplazando lo que ya hubiera de esos mismos archivos.
+
+    Por cada archivo: guarda los ids de sus chunks viejos, inserta los nuevos y
+    recién entonces borra los viejos. Así, si algo falla a mitad de camino, el
+    archivo queda con su versión anterior en vez de desaparecer o duplicarse.
+    Devuelve la cantidad de chunks insertados.
+    """
+    by_file: dict[str, list] = defaultdict(list)
+    for doc in documents:
+        # LlamaIndex mete la ruta completa en el texto que se embebe y que ve el
+        # LLM. Se reemplaza por el nombre: si no, el mismo archivo da chunks
+        # distintos según desde dónde se cargue, y la ruta local queda en la base.
+        doc.metadata["file_path"] = doc.metadata.get("file_name", "?")
+        # El nombre lo ve el LLM (sirve para citar), pero no entra al embedding:
+        # si no, una pregunta que menciona el título de un paper empata con todos
+        # sus chunks por igual y el que tiene la respuesta queda afuera del top-k.
+        if "file_path" not in doc.excluded_embed_metadata_keys:
+            doc.excluded_embed_metadata_keys.append("file_path")
+        by_file[doc.metadata.get("file_name", "?")].append(doc)
+
+    vector_store = index.vector_store
+    total = 0
+    for file_name, docs in by_file.items():
+        same_file = MetadataFilters(filters=[MetadataFilter(key="file_name", value=file_name)])
+        old_ids = [n.node_id for n in vector_store.get_nodes(filters=same_file)]
+        nodes = Settings.node_parser.get_nodes_from_documents(docs)
+        index.insert_nodes(nodes, show_progress=show_progress)
+        if old_ids:
+            vector_store.delete_nodes(node_ids=old_ids)
+        total += len(nodes)
+    return total
+
+
 def ingest() -> VectorStoreIndex:
-    """Lee los documentos, los parte en chunks, genera embeddings y persiste el índice."""
+    """Lee los documentos de data/, los parte en chunks, genera embeddings y los guarda.
+
+    Reindexar un archivo reemplaza sus chunks; los documentos subidos por la API
+    que no están en data/ no se tocan.
+    """
     if not os.path.isdir(config.DATA_DIR) or not os.listdir(config.DATA_DIR):
         sys.exit(f"No hay documentos en '{config.DATA_DIR}/'. Copiá ahí tus PDFs o .txt.")
 
     documents = SimpleDirectoryReader(config.DATA_DIR, recursive=True).load_data()
-    index = VectorStoreIndex.from_documents(documents, show_progress=True)
-    index.storage_context.persist(persist_dir=config.STORAGE_DIR)
-
-    n_chunks = len(index.docstore.docs)
+    documents = [d for d in documents if d.text.strip()]
+    index = load_index()
+    n_chunks = _index_documents(index, documents, show_progress=True)
     print(f"\nIndexados {len(documents)} documentos/páginas en {n_chunks} chunks.")
     return index
 
 
 def load_index() -> VectorStoreIndex:
-    if not os.path.isdir(config.STORAGE_DIR):
-        sys.exit("Todavía no hay índice. Corré primero: python rag.py ingest")
-    storage = StorageContext.from_defaults(persist_dir=config.STORAGE_DIR)
-    return load_index_from_storage(storage)
+    """Índice respaldado por pgvector. No carga nada en memoria: consulta la base."""
+    return VectorStoreIndex.from_vector_store(build_vector_store())
 
 
 def build_query_engine(index: VectorStoreIndex):
@@ -97,11 +198,10 @@ def ask(query_engine, question: str, show_sources: bool = True) -> str:
 
 
 def add_file(index: VectorStoreIndex, path: str) -> int:
-    """Indexa un archivo nuevo dentro de un índice ya cargado y persiste.
+    """Indexa un archivo dentro del índice existente, sin reconstruir todo.
 
-    A diferencia de ingest(), no reconstruye todo: parte el archivo en chunks,
-    calcula sus embeddings y los agrega al índice existente. Devuelve la
-    cantidad de documentos/páginas cargadas.
+    Parte el archivo en chunks, calcula sus embeddings y los guarda en la base.
+    Devuelve la cantidad de chunks insertados.
     """
     documents = SimpleDirectoryReader(input_files=[path]).load_data()
     # El lector no lanza error ante un archivo ilegible: lo saltea y devuelve
@@ -109,25 +209,22 @@ def add_file(index: VectorStoreIndex, path: str) -> int:
     documents = [d for d in documents if d.text.strip()]
     if not documents:
         raise ValueError("no se pudo extraer texto (¿archivo dañado o PDF escaneado?)")
-    for doc in documents:
-        index.insert(doc)
-    index.storage_context.persist(persist_dir=config.STORAGE_DIR)
-    return len(documents)
+    return _index_documents(index, documents)
 
 
-def list_documents(index: VectorStoreIndex) -> list[dict]:
-    """Archivos indexados con cantidad de páginas y chunks, según el docstore."""
-    files: dict[str, dict] = {}
-    for node in index.docstore.docs.values():
-        name = node.metadata.get("file_name", "?")
-        entry = files.setdefault(name, {"file_name": name, "pages": set(), "chunks": 0})
-        entry["chunks"] += 1
-        if node.metadata.get("page_label"):
-            entry["pages"].add(node.metadata["page_label"])
-    return [
-        {"file_name": f["file_name"], "pages": len(f["pages"]), "chunks": f["chunks"]}
-        for f in sorted(files.values(), key=lambda f: f["file_name"])
-    ]
+def list_documents() -> list[dict]:
+    """Archivos indexados con cantidad de páginas y chunks, calculado en la base."""
+    with get_engine().connect() as conn:
+        if conn.execute(sqlalchemy.text("SELECT to_regclass(:t)"), {"t": _table()}).scalar() is None:
+            return []  # la tabla se crea con el primer documento
+        rows = conn.execute(
+            sqlalchemy.text(
+                f"SELECT metadata_->>'file_name' AS file_name, "
+                f"count(DISTINCT metadata_->>'page_label') AS pages, count(*) AS chunks "
+                f"FROM {_table()} GROUP BY 1 ORDER BY 1"
+            )
+        )
+        return [dict(row._mapping) for row in rows]
 
 
 def chat(query_engine) -> None:
@@ -154,7 +251,10 @@ def main() -> None:
         ingest()
         return
 
-    query_engine = build_query_engine(load_index())
+    index = load_index()
+    if not list_documents():
+        sys.exit("Todavía no hay documentos indexados. Corré primero: python rag.py ingest")
+    query_engine = build_query_engine(index)
     if command == "ask":
         if len(sys.argv) < 3:
             sys.exit('Falta la pregunta: python rag.py ask "..."')

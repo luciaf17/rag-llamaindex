@@ -9,7 +9,15 @@ load_dotenv()
 
 PROVIDER = os.getenv("PROVIDER", "openai").lower()
 DATA_DIR = os.getenv("DATA_DIR", "data")
-STORAGE_DIR = os.getenv("STORAGE_DIR", "storage")
+
+# PostgreSQL con pgvector. Formato: postgresql://usuario:clave@host:puerto/base
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://rag:rag@localhost:5432/rag")
+# Una tabla por proveedor: los embeddings de modelos distintos no se pueden mezclar.
+# LlamaIndex le agrega el prefijo "data_" (rag_ollama -> data_rag_ollama).
+PG_TABLE = os.getenv("PG_TABLE") or f"rag_{PROVIDER}"
+# Dimensión del embedding. Si queda vacía se detecta con una llamada al modelo.
+EMBED_DIM = int(os.getenv("EMBED_DIM") or 0)
+
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "64"))
 TOP_K = int(os.getenv("TOP_K", "4"))

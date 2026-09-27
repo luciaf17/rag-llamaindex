@@ -9,3 +9,4 @@ llama-index-readers-file
 fastapi
 uvicorn[standard]
 python-multipart
+llama-index-vector-stores-postgres
