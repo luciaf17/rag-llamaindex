@@ -20,3 +20,5 @@ tests/
 pytest.ini
 requirements-dev.txt
 eval_set.json
+# Imágenes del README.
+docs/
