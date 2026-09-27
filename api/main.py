@@ -3,6 +3,7 @@
     POST /documents   sube un archivo (PDF, txt, md, docx) y lo indexa
     GET  /documents   lista lo que hay indexado
     POST /ask         responde una pregunta con fuentes
+    GET  /            interfaz web (HTMX), que usa las rutas /ui/*
 
 Uso: uvicorn api.main:app --reload
 La documentación interactiva queda en http://localhost:8000/docs
@@ -12,15 +13,17 @@ import re
 import tempfile
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import DBAPIError
 
 import config
 import rag
+from api import ui
 
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -168,3 +171,61 @@ def ask(body: AskRequest):
     except PROVIDER_ERRORS as exc:
         raise _provider_error(exc) from exc
     return {"answer": text, "sources": sources}
+
+
+# --- Interfaz web (HTMX) ---
+# Mismas operaciones que los endpoints JSON, pero devuelven fragmentos HTML.
+# Llaman a las funciones de arriba para no duplicar validaciones ni errores,
+# y convierten sus errores en HTML con el mismo código de estado.
+
+INDEX_HTML = Path(__file__).parent / "static" / "index.html"
+
+
+def _error_status(exc: Exception) -> tuple[int, str]:
+    if isinstance(exc, HTTPException):
+        return exc.status_code, str(exc.detail)
+    return 503, "La base de datos no está disponible."
+
+
+@app.get("/", include_in_schema=False)
+def index_page():
+    return FileResponse(INDEX_HTML)
+
+
+@app.get("/ui/documents", response_class=HTMLResponse, include_in_schema=False)
+def ui_documents():
+    try:
+        return ui.documents(get_documents())
+    except (HTTPException, DBAPIError) as exc:
+        status, message = _error_status(exc)
+        return HTMLResponse(ui.upload_error(message), status_code=status)
+
+
+@app.post("/ui/documents", response_class=HTMLResponse, include_in_schema=False)
+def ui_upload(file: UploadFile = File(...)):
+    try:
+        doc = upload_document(file)
+    except (HTTPException, DBAPIError) as exc:
+        status, message = _error_status(exc)
+        return HTMLResponse(ui.upload_error(message), status_code=status)
+    # HX-Trigger dispara un evento en el navegador: la lista de documentos lo
+    # escucha y se recarga sola.
+    return HTMLResponse(ui.upload_ok(doc), headers={"HX-Trigger": "documents-changed"})
+
+
+@app.post("/ui/ask", response_class=HTMLResponse, include_in_schema=False)
+def ui_ask(question: str = Form("")):
+    question = question.strip()
+    if not question:
+        return HTMLResponse("", status_code=204)  # nada que agregar al chat
+    return ui.question(question[:2000])
+
+
+@app.post("/ui/answer", response_class=HTMLResponse, include_in_schema=False)
+def ui_answer(question: str = Form(...)):
+    try:
+        result = ask(AskRequest(question=question))
+    except (HTTPException, DBAPIError) as exc:
+        status, message = _error_status(exc)
+        return HTMLResponse(ui.answer_error(message), status_code=status)
+    return ui.answer(result["answer"], result["sources"])

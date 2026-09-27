@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAG sobre documentos</title>
+  <!-- Por defecto HTMX no inserta respuestas 4xx/5xx. Así sí las muestra
+       (el servidor manda el error ya armado como HTML). -->
+  <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"
+          integrity="sha384-2OatzQy1H+Zd/IIrjr1TcuDGqLXeHhbooAyJY1KdQMKnr4LZ22k31GBLdYKHmVjg"
+          crossorigin="anonymous"></script>
+  <!-- Tailwind sin build: genera el CSS en el navegador a partir de las clases. -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"
+          integrity="sha384-2ql948lIdLcGEE0/qxNiudyTjgauA3RDJERu5xW75kFCvSl5a9odyQYCb6tEjnmB"
+          crossorigin="anonymous"></script>
+  <style>
+    /* Para el aviso de demora dentro de "Pensando…": aparece solo si tarda. */
+    @keyframes appear { to { opacity: 1; } }
+  </style>
+</head>
+<body class="h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+  <div class="mx-auto flex min-h-full max-w-6xl flex-col gap-4 p-4 md:h-full md:flex-row">
+
+    <aside class="flex flex-col gap-4 md:w-80 md:shrink-0">
+      <header>
+        <h1 class="text-xl font-semibold">RAG sobre documentos</h1>
+        <p class="text-sm text-slate-500">Responde solo con tus documentos y cita de dónde sale.</p>
+      </header>
+
+      <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <h2 class="mb-3 text-sm font-semibold">Subir documento</h2>
+        <form hx-post="/ui/documents" hx-encoding="multipart/form-data"
+              hx-target="#upload-status" hx-disabled-elt="find button"
+              hx-indicator="#upload-spinner"
+              hx-on::after-request="if (event.detail.successful) this.reset()"
+              class="flex flex-col gap-3">
+          <input type="file" name="file" accept=".pdf,.txt,.md,.docx" required
+                 class="block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-slate-200 dark:text-slate-400 dark:file:bg-slate-800 dark:file:text-slate-200">
+          <div class="flex items-center gap-3">
+            <button class="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300">
+              Indexar
+            </button>
+            <span id="upload-spinner" class="htmx-indicator text-sm text-slate-500">Indexando…</span>
+          </div>
+        </form>
+        <div id="upload-status" class="mt-3 text-sm" aria-live="polite"></div>
+      </section>
+
+      <section class="flex min-h-0 flex-1 flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <h2 class="mb-1 text-sm font-semibold">Documentos indexados</h2>
+        <!-- Se carga al abrir la página y cada vez que el servidor avisa
+             "documents-changed" (después de una subida exitosa). -->
+        <div id="documents" class="max-h-44 min-h-0 overflow-y-auto md:max-h-none"
+             hx-get="/ui/documents" hx-trigger="load, documents-changed from:body">
+          <p class="text-sm text-slate-500">Cargando…</p>
+        </div>
+      </section>
+    </aside>
+
+    <main class="flex min-h-[70vh] flex-1 flex-col rounded-xl border border-slate-200 bg-white shadow-sm md:min-h-0 dark:border-slate-800 dark:bg-slate-900">
+      <div id="messages" class="flex-1 space-y-4 overflow-y-auto p-4" aria-live="polite"
+           hx-on::after-settle="this.scrollTo({top: this.scrollHeight, behavior: 'smooth'})">
+        <!-- Visible solo mientras es el único hijo, o sea, antes del primer mensaje. -->
+        <p class="mt-16 hidden text-center text-sm text-slate-400 only:block">
+          Hacé una pregunta sobre los documentos indexados.
+        </p>
+      </div>
+      <form hx-post="/ui/ask" hx-target="#messages" hx-swap="beforeend"
+            hx-on::after-request="this.reset()"
+            class="flex gap-2 border-t border-slate-200 p-3 dark:border-slate-800">
+        <input name="question" required maxlength="2000" autocomplete="off"
+               placeholder="Escribí tu pregunta…" aria-label="Pregunta"
+               class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700">
+        <button class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+          Preguntar
+        </button>
+      </form>
+    </main>
+
+  </div>
+</body>
+</html>
