@@ -1,0 +1,17 @@
+# Lo que no entra en la imagen. Los secretos (.env) nunca: se pasan como
+# variables de entorno al correr el contenedor.
+.env
+.venv/
+venv/
+storage/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+# Los documentos no van en la imagen: se indexan en la base.
+# En docker compose se montan como volumen para poder correr el ingest.
+data/
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md

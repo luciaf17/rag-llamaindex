@@ -29,8 +29,11 @@ def configure_models() -> None:
         from llama_index.embeddings.ollama import OllamaEmbedding
         from llama_index.llms.ollama import Ollama
 
+        # En Docker, "localhost" es el contenedor: ahí va host.docker.internal.
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         Settings.llm = Ollama(
             model=os.getenv("OLLAMA_LLM", "llama3.1"),
+            base_url=base_url,
             request_timeout=120.0,
             temperature=0.1,
             # Sin esto la librería usa el contexto máximo del modelo (128k en
@@ -38,7 +41,8 @@ def configure_models() -> None:
             context_window=int(os.getenv("OLLAMA_CONTEXT_WINDOW", "8192")),
         )
         Settings.embed_model = OllamaEmbedding(
-            model_name=os.getenv("OLLAMA_EMBED", "nomic-embed-text")
+            model_name=os.getenv("OLLAMA_EMBED", "nomic-embed-text"),
+            base_url=base_url,
         )
     elif PROVIDER == "openai":
         from llama_index.embeddings.openai import OpenAIEmbedding

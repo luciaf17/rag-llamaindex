@@ -1,0 +1,51 @@
+# API del RAG + PostgreSQL con pgvector.
+#
+#   docker compose up -d --build     levanta todo
+#   docker compose exec api python rag.py ingest     indexa los PDFs de data/
+#   docker compose logs -f api       logs de la API
+#   docker compose down              apaga (los datos quedan en el volumen)
+#
+# El proveedor de modelos y sus claves salen de .env. Ollama corre en tu
+# máquina, fuera de Docker: la API lo alcanza por host.docker.internal.
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      # Credenciales solo para desarrollo local.
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432" # para usar la CLI desde tu máquina contra esta base
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    # Estas pisan a las de .env, que apuntan a localhost para correr fuera de Docker.
+    environment:
+      DATABASE_URL: postgresql://rag:rag@db:5432/rag
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # en Linux no existe por defecto
+    depends_on:
+      db:
+        condition: service_healthy # espera a que Postgres acepte conexiones
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: rag-pgdata
