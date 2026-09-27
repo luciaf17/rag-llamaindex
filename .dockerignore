@@ -15,3 +15,8 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 README.md
+# Los tests corren fuera de la imagen de producción.
+tests/
+pytest.ini
+requirements-dev.txt
+eval_set.json

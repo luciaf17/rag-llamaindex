@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY config.py rag.py evaluate.py eval_set.json ./
+COPY config.py rag.py ./
 COPY api/ api/
 
 # No correr como root dentro del contenedor.
